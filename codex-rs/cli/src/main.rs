@@ -23,6 +23,7 @@ use codex_exec::Cli as ExecCli;
 use codex_exec::Command as ExecCommand;
 use codex_exec::ReviewArgs;
 use codex_execpolicy::ExecPolicyCheckCommand;
+use codex_install_context::InstallContext;
 use codex_responses_api_proxy::Args as ResponsesApiProxyArgs;
 use codex_rollout_trace::REDUCED_STATE_FILE_NAME;
 use codex_rollout_trace::replay_bundle;
@@ -1064,6 +1065,14 @@ async fn cli_main(
         interactive.cwd = options.cwd.clone().or(interactive.cwd.take());
         interactive.no_alt_screen |= options.no_alt_screen;
         interactive.no_daemon |= options.no_daemon;
+    }
+    // A cargo build is a lone executable, with no package to install the shared
+    // server from. Run embedded unless this launch targets a remote server.
+    if root_remote.is_none()
+        && agents_options.is_none()
+        && InstallContext::current().package_layout.is_none()
+    {
+        interactive.no_daemon = true;
     }
     let root_strict_config = interactive.strict_config;
     interactive
