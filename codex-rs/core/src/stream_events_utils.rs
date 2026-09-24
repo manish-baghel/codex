@@ -104,6 +104,22 @@ pub(crate) async fn record_completed_response_item_with_finalized_facts(
         std::slice::from_ref(item),
     )
     .await;
+    if turn_context.config.otel.agent_response_logging_enabled() {
+        turn_context
+            .extension_data
+            .get_or_init(codex_otel::AgentResponseLogger::default)
+            .record(
+                &step_context.session_telemetry,
+                item,
+                codex_otel::AgentResponseContext {
+                    turn_id: &turn_context.sub_id,
+                    session_source: &turn_context.session_source,
+                    parent_turn_id: turn_context.turn_metadata_state.parent_turn_id(),
+                    root_turn_id: turn_context.turn_metadata_state.root_turn_id(),
+                    initiating_agent_path: turn_context.turn_metadata_state.initiating_agent_path(),
+                },
+            );
+    }
     let defers_mailbox_delivery = finalized_facts.map_or_else(
         || {
             completed_item_defers_mailbox_delivery_to_next_turn(
@@ -345,6 +361,10 @@ pub(crate) async fn handle_output_item_done(
         }
         // No tool call: convert messages/reasoning into turn items and mark them as complete.
         Ok(None) => {
+            ctx.sess
+                .services
+                .executed_tool_calls
+                .observe_non_dispatched_call(&item);
             let finalized_turn_item = finalize_non_tool_response_item(
                 ctx.sess.as_ref(),
                 TurnItemContributorPolicy::Run(ctx.turn_store.as_ref()),
@@ -381,6 +401,10 @@ pub(crate) async fn handle_output_item_done(
         }
         // The tool request should be answered directly (or was denied); push that response into the transcript.
         Err(FunctionCallError::RespondToModel(message)) => {
+            ctx.sess
+                .services
+                .executed_tool_calls
+                .observe_non_dispatched_call(&item);
             let response = ResponseInputItem::FunctionCallOutput {
                 call_id: String::new(),
                 output: FunctionCallOutputPayload {

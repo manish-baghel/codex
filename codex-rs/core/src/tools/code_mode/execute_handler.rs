@@ -1,10 +1,11 @@
 use crate::function_tool::FunctionCallError;
-use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
+use codex_prompts::ResolvedModelMessages;
+use codex_tools::IndirectNamespacePrefixes;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use std::sync::Arc;
@@ -13,6 +14,7 @@ use super::ExecContext;
 use super::PUBLIC_TOOL_NAME;
 use super::handle_runtime_response;
 use super::is_exec_tool_name;
+use super::output::CodeModeToolOutput;
 use super::telemetry::CodeModeToolCallGuard;
 use super::telemetry::trace_id;
 
@@ -36,10 +38,10 @@ impl CodeModeExecuteHandler {
         session: std::sync::Arc<crate::session::session::Session>,
         step_context: Arc<crate::session::step_context::StepContext>,
         call_id: String,
-        originating_item_id: Option<codex_protocol::ResponseItemId>,
+        originating_call: Option<crate::tools::context::ToolCallOrigin>,
         code: String,
         telemetry: &mut CodeModeToolCallGuard,
-    ) -> Result<FunctionToolOutput, FunctionCallError> {
+    ) -> Result<CodeModeToolOutput, FunctionCallError> {
         let args =
             codex_code_mode::parse_exec_source(&code).map_err(FunctionCallError::RespondToModel)?;
         let exec = ExecContext {
@@ -66,6 +68,13 @@ impl CodeModeExecuteHandler {
         }
         enabled_tools.sort_by(|left, right| left.name.cmp(&right.name));
         enabled_tools.dedup_by(|left, right| left.name == right.name);
+        let model_messages = ResolvedModelMessages::from_model(&step_context.settings.model_info);
+        IndirectNamespacePrefixes::new(
+            model_messages.indirect_description_prefixes(),
+            step_context.tool_router.mcp_namespaces(),
+        )
+        .map_err(|error| FunctionCallError::Fatal(error.to_string()))?
+        .apply_code_mode(&mut enabled_tools);
         let started_at = std::time::Instant::now();
         let started_cell = exec
             .session
@@ -113,7 +122,7 @@ impl CodeModeExecuteHandler {
         exec.session
             .services
             .code_mode_service
-            .mark_cell_ready_for_dispatch(&cell_id, originating_item_id);
+            .mark_cell_ready_for_dispatch(&cell_id, originating_call);
         let response = started_cell
             .initial_response()
             .await
@@ -146,14 +155,13 @@ impl CodeModeExecuteHandler {
         let wall_time = response
             .code_mode_host_duration()
             .unwrap_or_else(|| started_at.elapsed());
-        handle_runtime_response(
+        Ok(handle_runtime_response(
             &step_context.settings.model_info,
             response,
             args.max_output_tokens,
             wall_time,
-        )
-        .await
-        .map_err(FunctionCallError::RespondToModel)
+            exec.turn.config.code_mode.experimental_show_cell_overhead,
+        ))
     }
 }
 
@@ -194,7 +202,7 @@ impl CodeModeExecuteHandler {
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
         let handler_span = tracing::Span::current();
-        let originating_item_id = invocation.originating_item_id().await;
+        let originating_call = invocation.originating_call().await;
         let ToolInvocation {
             session,
             turn,
@@ -206,8 +214,7 @@ impl CodeModeExecuteHandler {
         } = invocation;
 
         let mut telemetry = CodeModeToolCallGuard::new(
-            session.services.analytics_events_client.clone(),
-            session.thread_id.to_string(),
+            &session,
             turn.sub_id.clone(),
             turn.turn_metadata_state.clone(),
             call_id.clone(),
@@ -220,7 +227,7 @@ impl CodeModeExecuteHandler {
                     session,
                     step_context,
                     call_id,
-                    originating_item_id,
+                    originating_call,
                     input,
                     &mut telemetry,
                 )
