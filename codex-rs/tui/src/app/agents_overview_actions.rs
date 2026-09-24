@@ -3,7 +3,6 @@
 //! Removing the current root leaves an unattached dashboard, even when it is empty.
 
 use super::App;
-use super::agents_overview_view::AgentsOverviewFocus;
 use crate::app_event::AgentsOverviewAction;
 use crate::app_event::AppEvent;
 use crate::app_server_session::AppServerSession;
@@ -90,7 +89,7 @@ async fn run_lifecycle_modal<T>(
             Some(event) = events.next() => {
                 tui.screen_size_for_event(&event)?;
                 match event {
-                    tui::TuiEvent::Key(_) | tui::TuiEvent::Paste(_) | tui::TuiEvent::FocusLost => {}
+                    tui::TuiEvent::Key(_) | tui::TuiEvent::Paste(_) | tui::TuiEvent::FocusLost | tui::TuiEvent::Mouse(_) => {}
                     tui::TuiEvent::Draw | tui::TuiEvent::Resize(_) | tui::TuiEvent::Resume | tui::TuiEvent::FocusGained => {
                         tui.draw(u16::MAX, |frame| {
                             progress.render(frame.area(), frame.buffer_mut());
@@ -158,7 +157,7 @@ impl App {
                     ..Default::default()
                 },
             ],
-            ..Default::default()
+            ..SelectionViewParams::picker()
         });
     }
 
@@ -179,6 +178,8 @@ impl App {
         let events = tui.event_stream();
         let operation = async {
             let result = async {
+                self.stop_voice_for_removed_thread(app_server, thread_id)
+                    .await?;
                 if let Some(primary) = primary_thread_id
                     && primary != thread_id
                 {
@@ -277,14 +278,16 @@ impl App {
             self.pending_thread_switch_resets += 1;
             self.app_event_tx
                 .send(AppEvent::ResetTranscriptForThreadSwitch);
-            self.reset_thread_event_state();
+            self.detach_current_thread_for_navigation(app_server, /*destination*/ None)
+                .await;
+            self.reset_thread_event_state().await;
             let init = self.chatwidget_init_for_forked_or_resumed_thread(
                 tui,
                 self.config.clone(),
                 /*initial_user_message*/ None,
             );
             self.replace_chat_widget(ChatWidget::new_with_app_event(init));
-            self.open_agents_overview(app_server, AgentsOverviewFocus::List);
+            self.open_agents_overview(app_server);
         } else {
             self.repaint_agents_overview();
             if attempted {
@@ -314,7 +317,7 @@ impl App {
                     dismiss_on_select: true,
                     ..Default::default()
                 }],
-                ..Default::default()
+                ..SelectionViewParams::picker()
             });
         }
 

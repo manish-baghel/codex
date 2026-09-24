@@ -1999,11 +1999,7 @@ extends = "first"
                 config.permissions.permission_profile(),
             )?
             .unwrap();
-        assert_eq!(
-            rebuilt.credential_broker_enabled(),
-            expected_enabled,
-            "{key}"
-        );
+        assert_eq!(Some(&rebuilt), config.permissions.network.as_ref(), "{key}");
     }
     Ok(())
 }
@@ -3760,7 +3756,7 @@ profile = "ignored"
         &codex_home_untrusted,
         Some(cwd.clone()),
         &[] as &[(String, TomlValue)],
-        LoaderOverrides::default(),
+        LoaderOverrides::without_managed_config_for_tests(),
         &codex_config::NoopThreadConfigLoader,
     )
     .await?;
@@ -3802,7 +3798,7 @@ profile = "ignored"
         &codex_home_unknown,
         Some(cwd),
         &[] as &[(String, TomlValue)],
-        LoaderOverrides::default(),
+        LoaderOverrides::without_managed_config_for_tests(),
         &codex_config::NoopThreadConfigLoader,
     )
     .await?;
