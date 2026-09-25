@@ -268,6 +268,11 @@ impl StepContext {
         });
         settings.service_tier = turn.config.service_tier.clone();
         Arc::new(Self {
+            preempt: turn
+                .config
+                .features
+                .enabled(Feature::InstantInterrupt)
+                .then(tokio_util::sync::CancellationToken::new),
             token_budget: token_budget::resolve_token_budget(
                 turn.configured_token_budget.as_ref(),
                 turn.use_model_token_budget_defaults,
@@ -5718,7 +5723,7 @@ async fn mcp_attribution_checkpoints_cover_batch_prefixes_compaction_and_restore
 
 #[tokio::test]
 async fn standalone_settings_invalidate_continuation_before_delivering_acceptance() {
-    let (mut session, _) = make_session_and_context().await;
+    let (mut session, turn_context) = make_session_and_context().await;
     let (tx, rx) = async_channel::bounded(1);
     session.tx_event = tx;
     session.state.lock().await.last_started_turn_id = Some("superseded-turn".into());
@@ -5736,18 +5741,44 @@ async fn standalone_settings_invalidate_continuation_before_delivering_acceptanc
         .await
         .expect("fill event channel");
     let session = Arc::new(session);
-    let mut update = Box::pin(tokio::task::unconstrained(thread_settings::update(
-        &session,
-        "settings".into(),
-        codex_protocol::protocol::ThreadSettingsOverrides::default(),
+    let (reply, mut accepted) = tokio::sync::oneshot::channel();
+    let (tx_sub, rx_sub) = async_channel::bounded(1);
+    tx_sub
+        .send(Submission {
+            id: "settings".into(),
+            op: Op::ThreadSettings {
+                thread_settings: codex_protocol::protocol::ThreadSettingsOverrides::default(),
+                reply: Some(reply),
+            },
+            trace: None,
+            parent_turn_id: None,
+            root_turn_id: None,
+            residency_guard: None,
+        })
+        .await
+        .expect("submit settings");
+    let mut submissions = Box::pin(tokio::task::unconstrained(submission_loop(
+        Arc::clone(&session),
+        turn_context.config,
+        rx_sub,
     )));
-    assert!(futures::poll!(update.as_mut()).is_pending());
+    assert!(futures::poll!(submissions.as_mut()).is_pending());
     assert_eq!(session.state.lock().await.last_started_turn_id, None);
+    accepted
+        .try_recv()
+        .expect("receive acceptance before the event is delivered")
+        .expect("settings accepted");
     let mut checkpoint = Box::pin(session.checkpoint_thread_settings());
     assert!(futures::poll!(checkpoint.as_mut()).is_pending());
     rx.recv().await.expect("release event delivery");
-    update.await;
+    assert!(futures::poll!(submissions.as_mut()).is_pending());
     checkpoint.await.expect("checkpoint after settings update");
+    assert!(matches!(
+        rx.recv().await.expect("receive settings event").msg,
+        EventMsg::ThreadSettingsApplied(_)
+    ));
+    drop(tx_sub);
+    submissions.await;
 }
 
 #[tokio::test]
@@ -9676,7 +9707,9 @@ async fn step_context_keeps_its_mcp_runtime_for_tools() -> anyhow::Result<()> {
             environment_id: DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
             enabled: true,
             required: false,
+            startup_readiness: Default::default(),
             supports_parallel_tool_calls: false,
+            tool_input_schema_max_bytes: None,
             omit_tools_from: None,
             disabled_reason: None,
             startup_timeout_sec: None,

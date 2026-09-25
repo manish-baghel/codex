@@ -732,7 +732,9 @@ async fn run_code_mode_turn_with_rmcp_config(
                 environment_id: "local".to_string(),
                 enabled: true,
                 required: false,
+                startup_readiness: Default::default(),
                 supports_parallel_tool_calls: false,
+                tool_input_schema_max_bytes: None,
                 omit_tools_from: None,
                 disabled_reason: None,
                 startup_timeout_sec: Some(Duration::from_secs(10)),
@@ -922,6 +924,150 @@ async fn code_mode_only_restricts_prompt_tools() -> Result<()> {
     );
 
     Ok(())
+}
+
+pub(super) async fn mcp_schema_max_bytes_scenario() -> Result<Vec<ResponsesRequest>> {
+    let server = responses::start_mock_server().await;
+    AppsTestServer::mount(&server).await?;
+    let parameter_description = format!(
+        "{}budget_description_marker",
+        "parameter guidance ".repeat(2_500)
+    );
+    let shared_description = format!(
+        "{}code_mode_description_marker",
+        "reference guidance ".repeat(120)
+    );
+    let shared_properties = (0..8)
+        .map(|index| {
+            (
+                format!("query{index}"),
+                serde_json::json!({"$ref": "#/$defs/query"}),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    Mock::given(method("POST"))
+        .and(wiremock::matchers::path_regex("^/api/codex/ps/mcp/?$"))
+        .and(body_partial_json(serde_json::json!({"method": "tools/list"})))
+        .respond_with(move |request: &Request| {
+            let body: Value = serde_json::from_slice(&request.body).expect("valid MCP request");
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": body["id"],
+                "result": {"tools": [{
+                    "name": "search",
+                    "description": "Search for matching content.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string", "description": parameter_description}},
+                        "required": ["query"],
+                        "additionalProperties": false,
+                    },
+                }, {
+                    "name": "shared",
+                    "description": "Search with shared input types.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": shared_properties,
+                        "$defs": {"query": {"type": "object", "properties": {"term": {"type": "string", "description": shared_description}}, "required": ["term"]}},
+                    },
+                }]},
+            }))
+        })
+        .with_priority(1)
+        .mount(&server)
+        .await;
+
+    let url = format!("{}/api/codex/ps/mcp", server.uri());
+    let mut builder = test_codex()
+        .with_model_info_override("gpt-5.4", |model| model.supports_search_tool = false)
+        .with_config(move |config| {
+            config
+                .features
+                .enable(Feature::CodeModeOnly)
+                .expect("enable Code Mode");
+            config.code_mode.tool_input_schema_max_bytes = Some(30_000);
+            let mut servers = config.mcp_servers.get().clone();
+            for (name, budget) in [("default_schema", None), ("expanded_schema", Some(60_000))] {
+                let mut server_config = serde_json::json!({"url": url});
+                if let Some(budget) = budget {
+                    server_config["tool_input_schema_max_bytes"] = serde_json::json!(budget);
+                }
+                servers.insert(
+                    name.to_string(),
+                    serde_json::from_value(server_config).expect("valid MCP config"),
+                );
+            }
+            config.mcp_servers.set(servers).expect("set MCP servers");
+        });
+    let test = builder.build_with_auto_env(&server).await?;
+    wait_for_mcp_server(&test.codex, "expanded_schema").await?;
+    let lookup = r#"
+const results = ["default_schema", "expanded_schema"].map(server => {
+  const description = ALL_TOOLS.find(({name}) => name === `mcp__${server}__search`)?.description ?? "";
+  return [description.includes("budget_description_marker"), description.includes("query: string;")];
+});
+const shared = ALL_TOOLS.find(({name}) => name === "mcp__default_schema__shared")?.description ?? "";
+results.push([shared.includes("code_mode_description_marker"), shared.includes("term: string;")]);
+text(JSON.stringify(results));"#;
+    let responses = responses::mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-1"),
+                ev_custom_tool_call("lookup", "exec", lookup),
+                ev_completed("resp-1"),
+            ]),
+            sse(vec![
+                ev_assistant_message("msg-1", "done"),
+                ev_completed("resp-2"),
+            ]),
+        ],
+    )
+    .await;
+    test.submit_turn("inspect the search tool declarations")
+        .await?;
+    let requests = responses.requests();
+    let body = requests[0].body_json();
+    let exec_description = body["tools"]
+        .as_array()
+        .expect("request tools")
+        .iter()
+        .find(|tool| tool["name"] == "exec")
+        .and_then(|tool| tool["description"].as_str())
+        .expect("exec description");
+    for (name, preserves_description) in [("default_schema", false), ("expanded_schema", true)] {
+        let declaration = exec_description
+            .split_once(&format!("### `mcp__{name}__search`"))
+            .expect("MCP tool declaration")
+            .1
+            .split("\n### `")
+            .next()
+            .expect("tool section");
+        assert_eq!(
+            declaration.contains("budget_description_marker"),
+            preserves_description,
+            "{name}"
+        );
+        assert!(
+            declaration.contains("query: string;"),
+            "{name}: argument type should remain available"
+        );
+    }
+    let shared_declaration = exec_description
+        .split_once("### `mcp__default_schema__shared`")
+        .expect("shared MCP tool declaration")
+        .1
+        .split("\n### `")
+        .next()
+        .expect("tool section");
+    assert!(shared_declaration.contains("code_mode_description_marker"));
+    assert!(shared_declaration.contains("term: string;"));
+    let (output, success) = custom_tool_output_body_and_success(&requests[1], "lookup");
+    assert_ne!(success, Some(false), "ALL_TOOLS lookup failed: {output}");
+    let output =
+        custom_tool_output_last_non_empty_text(&requests[1], "lookup").expect("ALL_TOOLS output");
+    assert_eq!(output, "[[false,true],[true,true],[true,true]]");
+    Ok(requests)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -8694,5 +8840,144 @@ text(JSON.stringify({
     );
     assert_eq!(compared.get("waited_long_enough"), Some(&Value::Bool(true)));
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_oversized_websocket_yield_keeps_later_wait_incomplete() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    const LIMIT: usize = 15 * 1024 * 1024;
+    const PROMPT: &str = "Record a call, yield, then stop";
+
+    // Calibrate a first request with the same tools/features/turn prompt; its
+    // exact serialized overhead varies with the model catalog and headers.
+    let configure = |config: &mut Config, instructions: String| {
+        config.base_instructions = Some(instructions);
+        config.model_context_window = Some(20_000_000);
+        config.model_auto_compact_token_limit = Some(20_000_000);
+        config.features.disable(Feature::TokenBudget).unwrap();
+        config.features.enable(Feature::CodeMode).unwrap();
+        config
+            .features
+            .enable(Feature::ExecutedToolCallMetadata)
+            .unwrap();
+        config
+            .features
+            .disable(Feature::RemoteCompactionV2)
+            .unwrap();
+        config.model_provider.request_max_retries = Some(0);
+        config.model_provider.stream_max_retries = Some(0);
+    };
+    let warmup = || vec![ev_response_created("warmup"), ev_completed("warmup")];
+    let probe_server = responses::start_websocket_server(vec![vec![
+        warmup(),
+        vec![ev_response_created("probe"), ev_completed("probe")],
+    ]])
+    .await;
+    let mut probe_builder = test_codex()
+        .with_model("test-gpt-5.1-codex")
+        .with_config(move |config| configure(config, String::new()));
+    let probe = probe_builder
+        .build_with_websocket_server(&probe_server)
+        .await?;
+    probe.submit_turn(PROMPT).await?;
+    let probe_connection = probe_server.single_connection();
+    assert_eq!(probe_connection.len(), 2);
+    let base_bytes = serde_json::to_vec(&probe_connection[1].body_json())?.len();
+    assert!(base_bytes + 4 * 1024 < LIMIT);
+    probe.codex.shutdown_and_wait().await?;
+    probe_server.shutdown().await;
+
+    // One 7 KiB invocation stays under the recorder's per-output argument
+    // budget. It pushes the yielded delta over the message budget only.
+    let instructions = "x".repeat(LIMIT - base_bytes - 4 * 1024);
+    let code = r#"
+await tools.test_sync_tool({ barrier: { id: "x".repeat(7000), participants: 1 } });
+text("yielded");
+yield_control();
+await new Promise(() => {});
+"#;
+    let mut exec = ev_custom_tool_call("exec-a", "exec", code);
+    exec["item"]["id"] = serde_json::json!("ctc_exec_a");
+    let mut wait =
+        responses::ev_function_call("wait-a", "wait", r#"{"cell_id":"1","terminate":true}"#);
+    wait["item"]["id"] = serde_json::json!("fc_wait_a");
+    let server = responses::start_websocket_server(vec![vec![
+        warmup(),
+        vec![ev_response_created("resp-1"), exec, ev_completed("resp-1")],
+        vec![ev_response_created("resp-2"), wait, ev_completed("resp-2")],
+        vec![ev_response_created("resp-3"), ev_completed("resp-3")],
+    ]])
+    .await;
+    let mut builder = test_codex()
+        .with_model("test-gpt-5.1-codex")
+        .with_config(move |config| configure(config, instructions));
+    let test = builder.build_with_websocket_server(&server).await?;
+    test.submit_turn(PROMPT).await?;
+    let connection = server.single_connection();
+    assert_eq!(connection.len(), 4);
+    let first = connection[1].body_json();
+    let yielded_request = connection[2].body_json();
+    let terminal_request = connection[3].body_json();
+    assert!(serde_json::to_vec(&first)?.len() <= LIMIT);
+    assert!(serde_json::to_vec(&yielded_request)?.len() <= LIMIT);
+    assert_eq!(yielded_request["previous_response_id"], "resp-1");
+    assert_eq!(terminal_request["previous_response_id"], "resp-2");
+
+    let find_output = |request: &Value, call_id: &str| -> Value {
+        request["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| {
+                item["call_id"] == call_id
+                    && matches!(
+                        item["type"].as_str(),
+                        Some("custom_tool_call_output" | "function_call_output")
+                    )
+            })
+            .unwrap()
+            .clone()
+    };
+    let yielded = find_output(&yielded_request, "exec-a");
+    let observed = &yielded["internal_chat_message_metadata_passthrough"];
+    let output_text = match &yielded["output"] {
+        Value::String(text) => text.clone(),
+        Value::Array(items) => items
+            .iter()
+            .filter_map(|item| item["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => panic!("unexpected Code Mode output"),
+    };
+    assert!(output_text.contains("yielded"));
+    assert!(output_text.contains("Script running with cell ID 1"));
+    // The request budget must actually trim a recorded call's arguments.
+    assert_eq!(observed["cell_id"], "exec-a");
+    let calls = observed["executed_tool_calls"].as_array().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["name"], "test_sync_tool");
+    assert!(
+        calls[0]["arguments"]
+            .get("_codex_executed_tool_call_truncated")
+            .is_some()
+    );
+    let terminal = find_output(&terminal_request, "wait-a");
+    assert_eq!(
+        terminal["internal_chat_message_metadata_passthrough"].get("tool_calls_complete"),
+        None
+    );
+
+    // Compare ordinary outputs against the live session history. No actual
+    // invocation, output, or wait request is changed by metadata trimming.
+    let history = test.codex.conversation_history_snapshot().await;
+    let history = serde_json::to_value(history.items().collect::<Vec<_>>())?;
+    let history_request = serde_json::json!({"input": history});
+    for (call_id, actual) in [("exec-a", yielded), ("wait-a", terminal)] {
+        let original = find_output(&history_request, call_id);
+        assert_eq!(actual["output"], original["output"]);
+    }
+    test.codex.shutdown_and_wait().await?;
+    server.shutdown().await;
     Ok(())
 }

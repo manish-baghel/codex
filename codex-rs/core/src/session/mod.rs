@@ -3645,7 +3645,7 @@ impl Session {
             }
             state
                 .history
-                .record_annotated_items(&items, model_info.truncation_policy.into());
+                .record_annotated_items(&mut items, model_info.truncation_policy.into());
         }
         for image in image_preparations {
             self.services
@@ -3905,7 +3905,7 @@ impl Session {
             selected_plugins.plugins.retain(|plugin| {
                 ready_selected_capability_roots
                     .iter()
-                    .any(|root| root.id == plugin.selected_root_id)
+                    .any(|root| plugin.selected_root_id.as_ref() == Some(&root.id))
             });
             extension_data.insert(selected_plugins.clone());
             let tool_router = turn::built_tools(
@@ -3942,6 +3942,11 @@ impl Session {
         ) = prepared_tools??;
         turn_context.extension_data.insert(selected_plugins);
         Ok(Arc::new(StepContext {
+            preempt: turn_context
+                .config
+                .features
+                .enabled(Feature::InstantInterrupt)
+                .then(CancellationToken::new),
             realtime: self.conversation.snapshot().await,
             settings,
             token_budget,

@@ -445,6 +445,32 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    pub(crate) fn agents_navigation_key_available(&self) -> bool {
+        let left = KeyEvent::from(KeyCode::Left);
+        self.composer.agents_navigation_key_available()
+            && !crate::keymap::keymap_action_ids()
+                .filter(|action| {
+                    matches!(
+                        action.context,
+                        KeymapContext::Global | KeymapContext::Chat | KeymapContext::Voice
+                    )
+                })
+                .any(|action| {
+                    crate::keymap::bindings_for_action(
+                        &self.keymap,
+                        action.context.config_name(),
+                        action.action,
+                    )
+                    .is_some_and(|bindings| bindings.is_pressed(left))
+                })
+            && !self.keymap.chords.bindings.iter().any(|binding| {
+                matches!(
+                    binding.action.context,
+                    KeymapContext::Global | KeymapContext::Chat | KeymapContext::Voice
+                ) && binding.chord.prefix.is_press(left)
+            })
+    }
+
     pub(crate) fn set_task_mentions_enabled(&mut self, enabled: bool) {
         self.composer.set_task_mentions_enabled(enabled);
         self.request_redraw();
@@ -1113,9 +1139,8 @@ impl BottomPane {
         self.composer.current_text()
     }
 
-    #[cfg(test)]
     pub(crate) fn composer_cursor(&self) -> usize {
-        self.composer.cursor()
+        self.composer.current_cursor()
     }
 
     #[cfg(test)]
@@ -1272,6 +1297,30 @@ impl BottomPane {
     }
 
     // esc_backtrack_hint_visible removed; hints are controlled internally.
+
+    pub(crate) fn set_prompt_suggestion(
+        &mut self,
+        request: crate::prompt_suggestions::SuggestionRequest,
+    ) {
+        self.composer.set_prompt_suggestion(request);
+    }
+
+    pub(crate) fn has_prompt_suggestion(&self) -> bool {
+        self.composer.has_prompt_suggestion()
+    }
+
+    pub(crate) fn clear_prompt_suggestion(&mut self) {
+        self.composer.clear_prompt_suggestion();
+    }
+
+    pub(crate) fn apply_prompt_suggestion(
+        &mut self,
+        request: &crate::prompt_suggestions::SuggestionRequest,
+        text: Option<String>,
+    ) {
+        self.composer.apply_prompt_suggestion(request, text);
+        self.request_redraw();
+    }
 
     pub fn set_task_running(&mut self, running: bool) {
         let was_running = self.is_task_running;
@@ -1765,6 +1814,10 @@ impl BottomPane {
         self.composer.copy_selection(event, copy)
     }
 
+    pub(crate) fn can_paste_on_right_click(&self) -> bool {
+        self.no_modal_or_popup_active() && self.composer.can_paste_on_right_click()
+    }
+
     pub(crate) fn prepare_composer_mouse(&mut self, event: crossterm::event::MouseEvent) -> bool {
         if self.has_active_view() || self.questions.as_ref().is_some_and(|q| q.expanded) {
             self.composer.end_mouse_drag();
@@ -1877,6 +1930,20 @@ impl BottomPane {
         if let Some(tool_suggestion) = request.tool_suggestion()
             && let Some(install_url) = tool_suggestion.install_url.clone()
         {
+            let Some(install_url) = app_link_view::validate_external_url(
+                &install_url,
+                /*require_chatgpt_host*/ false,
+            ) else {
+                self.app_event_tx.resolve_elicitation(
+                    request.thread_id(),
+                    request.server_name().to_string(),
+                    request.request_id().clone(),
+                    codex_app_server_protocol::McpServerElicitationAction::Decline,
+                    /*content*/ None,
+                    /*meta*/ None,
+                );
+                return;
+            };
             let suggestion_type = match tool_suggestion.suggest_type {
                 mcp_server_elicitation::ToolSuggestionType::Install => {
                     AppLinkSuggestionType::Install
@@ -1906,7 +1973,7 @@ impl BottomPane {
                             "external actions use URL mode elicitation, not tool suggestion forms"
                         ),
                     },
-                    url: install_url,
+                    url: install_url.into(),
                     is_installed,
                     is_enabled: false,
                     suggest_reason: Some(tool_suggestion.suggest_reason.clone()),

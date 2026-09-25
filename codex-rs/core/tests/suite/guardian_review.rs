@@ -1485,7 +1485,7 @@ async fn guardian_session_is_reused_for_consecutive_tool_reviews_without_prewarm
     let mut extensions = ExtensionRegistryBuilder::<Config>::new();
     extensions.tool_lifecycle_contributor(lifecycle_recorder.clone());
     let mut builder = test_codex()
-        .with_model("gpt-5.4")
+        .with_model_info_override("gpt-5.4", |_| {})
         .with_extensions(Arc::new(extensions.build()))
         .with_config(move |config| {
             let secret_file = config.cwd.join("guardian-secret.txt");
@@ -1719,6 +1719,18 @@ async fn guardian_session_is_reused_for_consecutive_tool_reviews_without_prewarm
     }
     let first_guardian_request = guardian_requests[0].body_json();
     let second_guardian_request = guardian_requests[2].body_json();
+    let second_input = guardian_requests[2]
+        .message_input_text_groups("user")
+        .last()
+        .expect("second review input")
+        .concat();
+    assert_eq!(
+        second_input
+            .matches("run the second command that requires Guardian review")
+            .count(),
+        1
+    );
+    assert!(!second_input.contains("run the first command that requires Guardian review"));
     let first_parent_request = requests[0].body_json();
     let second_parent_request = requests[4].body_json();
     let first_parent_turn_id = first_parent_request["client_metadata"]["turn_id"]

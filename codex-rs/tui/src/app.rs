@@ -168,7 +168,6 @@ use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
 use crossterm::event::KeyModifiers;
-use ratatui::backend::Backend;
 use ratatui::layout::Rect;
 use ratatui::layout::Size;
 use ratatui::style::Stylize;
@@ -179,7 +178,6 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
-use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -241,6 +239,7 @@ mod permission_shortcuts;
 mod pets;
 mod platform_actions;
 mod plugin_mentions;
+mod prompt_suggestions;
 mod rate_limit_refresh;
 mod realtime_delivery;
 mod realtime_settings;
@@ -250,6 +249,7 @@ mod reconnect;
 mod replay_filter;
 mod resize_reflow;
 mod resume_config;
+mod right_click_paste;
 mod safety_buffering;
 mod server_version_notice;
 mod session_lifecycle;
@@ -580,7 +580,6 @@ pub(crate) struct App {
     pub(crate) file_search: FileSearchManager,
 
     pub(crate) transcript_cells: Vec<Arc<dyn HistoryCell>>,
-    composer_tips: composer_hints::ComposerTips,
     native_history: native_history::NativeHistory,
     pub(crate) transcript_view: crate::transcript_view::TranscriptView,
     last_rendered_history_tail: Option<history_ui::RenderedHistoryTail>,
@@ -621,6 +620,8 @@ pub(crate) struct App {
     environment_manager: Arc<EnvironmentManager>,
     app_server_target: AppServerTarget,
     reconnect: reconnect::ReconnectState,
+    pending_right_click_paste: Option<right_click_paste::PendingPaste>,
+    right_click_paste_environment: right_click_paste::PasteEnvironment,
     /// Set when the user confirms an update; propagated on exit.
     daemon_cli_executable: Option<AbsolutePathBuf>,
     pub(crate) pending_update_action: Option<UpdateAction>,
@@ -645,6 +646,7 @@ pub(crate) struct App {
     background_voice: Option<Box<ChatWidget>>,
     background_voice_error: Option<(ThreadId, String)>,
     temporary_structured_requests: HashMap<ThreadId, mpsc::UnboundedSender<ServerNotification>>,
+    hidden_prompt_threads: VecDeque<ThreadId>,
     /// Track title generation across thread switches and deduplicate automatic requests.
     pending_thread_titles: HashMap<(ThreadId, ThreadTitleDestination), CancellationToken>,
     thread_event_listener_tasks: HashMap<ThreadId, JoinHandle<()>>,
@@ -866,7 +868,9 @@ impl App {
         app_server: &mut AppServerSession,
         event: TuiEvent,
     ) -> Result<AppRunControl> {
+        self.invalidate_right_click_paste(&event);
         self.finish_clipboard(tui);
+        let event = self.finish_right_click_paste(tui, event);
         if matches!(&event, TuiEvent::Key(_))
             && self.handle_composer_copy_event(tui, &event, |tui, text| {
                 tui.copy_transcript_selection(text, crate::clipboard_copy::CopyFormat::PlainText)
@@ -1021,7 +1025,9 @@ impl App {
             if self.overlay.is_none()
                 && self.chat_widget.no_modal_or_popup_active()
                 && self.chat_widget.is_external_writer_view()
-                && crate::key_hint::plain(KeyCode::Esc).is_press(*key)
+                && (crate::key_hint::plain(KeyCode::Esc).is_press(*key)
+                    || (crate::key_hint::plain(KeyCode::Left).is_press(*key)
+                        && self.chat_widget.agents_navigation_key_available()))
             {
                 self.open_agents_overview(app_server);
             } else if self.reconnect.presentation == reconnect::ReconnectPresentation::Overview {
@@ -1157,7 +1163,8 @@ impl App {
                         self.app_event_tx.send(AppEvent::LaunchExternalEditor);
                     }
                 }
-                TuiEvent::FocusLost | TuiEvent::Mouse(_) => {}
+                TuiEvent::Mouse(mouse) => self.start_right_click_paste(tui, mouse),
+                TuiEvent::FocusLost => {}
             }
         }
         Ok(AppRunControl::Continue)

@@ -13,6 +13,7 @@ pub use crate::mcp_types::McpServerEnvVar;
 pub use crate::mcp_types::McpServerOAuthConfig;
 pub use crate::mcp_types::McpServerToolConfig;
 pub use crate::mcp_types::McpServerTransportConfig;
+pub use crate::mcp_types::McpStartupReadiness;
 pub use crate::mcp_types::RawMcpServerConfig;
 pub use crate::shell_environment_policy::ShellEnvironmentPolicyToml;
 pub use codex_protocol::config_types::AltScreenMode;
@@ -740,6 +741,19 @@ pub enum TuiPetAnchor {
     ScreenBottom,
 }
 
+/// Right-click text paste when the fullscreen TUI has no selection.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RightClickPaste {
+    /// Enable on Windows/WSL/Linux, except recognized terminal-owned paste paths.
+    #[default]
+    Auto,
+    /// Enable on supported local platforms; selection and terminal-owned paste still win.
+    On,
+    /// Leave right-click paste to the terminal.
+    Off,
+}
+
 /// When transcript mouse selections are copied on release.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, Default)]
 #[serde(rename_all = "lowercase")]
@@ -855,6 +869,12 @@ pub struct Tui {
     /// On other platforms, direct terminals default off except iTerm2/Terminal.app.
     #[serde(default)]
     pub copy_on_select: CopyOnSelect,
+
+    /// Right-click text paste fallback. Defaults to `auto` (Windows/WSL/Linux).
+    /// `on` also enables macOS; neither mode reads over SSH or in recognized VS Code terminals.
+    /// This controls the fullscreen fallback, not the terminal's own paste binding.
+    #[serde(default)]
+    pub right_click_paste: RightClickPaste,
 
     /// Controls whether the TUI uses the terminal's alternate screen buffer.
     ///
