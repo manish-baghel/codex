@@ -41,6 +41,7 @@ impl App {
                 AppEvent::OpenDaemonMenu
                     | AppEvent::OpenWarnings
                     | AppEvent::CopyWarning(_)
+                    | AppEvent::UpdateWarnings { .. }
                     | AppEvent::CopySelection { .. }
                     | AppEvent::ConfirmDaemonUpdate(_)
                     | AppEvent::RunDaemonUpdate(_)
@@ -49,8 +50,6 @@ impl App {
                     | AppEvent::ResetTranscriptForThreadSwitch
                     | AppEvent::ResetTranscriptForThreadSwitchPreservingScreen
                     | AppEvent::FinishPromptRevert { .. }
-                    | AppEvent::PromptSuggestionStarted { .. }
-                    | AppEvent::PromptSuggestionFinished { .. }
                     | AppEvent::ManagedWorktreeCreated(_)
                     | AppEvent::AgentsOverviewWorktreeCreated(_)
                     | AppEvent::AppendMessageHistoryEntry { .. }
@@ -150,7 +149,7 @@ impl App {
             AppEvent::PluginMentionsLoaded { ref cwd, .. }
                 if cwds_differ(cwd, self.config.cwd.as_path()) => {}
             AppEvent::NewSession { name } => {
-                self.start_fresh_session_with_summary_hint(
+                self.start_fresh_session(
                     tui, app_server, /*session_start_source*/ None,
                     /*initial_user_message*/ None, name,
                 )
@@ -347,6 +346,20 @@ impl App {
                 }
             }
             AppEvent::OpenWarnings => self.chat_widget.open_warnings(&self.transcript_cells),
+            AppEvent::UpdateWarnings { transcript, dismissed, kept } => {
+                if !Arc::ptr_eq(&transcript, &self.chat_widget.warning_display_state.transcript) {
+                    return Ok(AppRunControl::Continue);
+                }
+                let state = &mut self.chat_widget.warning_display_state.dismissed;
+                state.extend(dismissed.into_iter().map(|entry| (entry.id, entry.details)));
+                for entry in kept {
+                    if state.get(&entry.id) == Some(&entry.details) {
+                        state.remove(&entry.id);
+                    }
+                }
+                self.chat_widget.warning_display_state.synced_cells = None;
+                tui.frame_requester().schedule_frame();
+            }
             AppEvent::CopyWarning(text) => {
                 let result = tui.copy_transcript_selection(&text, crate::clipboard_copy::CopyFormat::PlainText);
                 self.chat_widget.show_selection_copy_result(result);
@@ -376,7 +389,7 @@ impl App {
                 self.clear_terminal_ui(tui, /*redraw_header*/ false)?;
                 self.reset_app_ui_state_after_clear();
 
-                self.start_fresh_session_with_summary_hint(
+                self.start_fresh_session(
                     tui,
                     app_server,
                     Some(ThreadStartSource::Clear),
@@ -396,7 +409,7 @@ impl App {
                 self.clear_terminal_ui(tui, /*redraw_header*/ false)?;
                 self.reset_app_ui_state_after_clear();
 
-                self.start_fresh_session_with_summary_hint(
+                self.start_fresh_session(
                     tui,
                     app_server,
                     Some(ThreadStartSource::Clear),
@@ -818,6 +831,10 @@ impl App {
             }
             AppEvent::InsertHistoryCell(cell) => {
                 self.insert_history_cell(tui, cell);
+            }
+            AppEvent::TurnTipReady { thread_id, turn_id } => {
+                self.turn_tips.ready(thread_id, &turn_id, self.transcript_cells.last());
+                tui.frame_requester().schedule_frame();
             }
             AppEvent::EndInitialHistoryReplayBuffer => {
                 self.scrollback_has_older_history = self
@@ -2641,19 +2658,6 @@ impl App {
             } => {
                 self.suggest_thread_name(app_server, thread_id, request_id)
                     .await;
-            }
-            AppEvent::GeneratePromptSuggestion(request) => {
-                self.generate_prompt_suggestion(app_server, request);
-            }
-            AppEvent::PromptSuggestionStarted { request, result } => {
-                self.on_prompt_suggestion_started(app_server, request, result);
-            }
-            AppEvent::PromptSuggestionFinished { request, temporary_thread_id, text } => {
-                self.temporary_structured_requests.remove(&temporary_thread_id);
-                if text.is_none() {
-                    request.cancellation.cancel();
-                }
-                self.chat_widget.apply_prompt_suggestion(&request, text);
             }
             AppEvent::ThreadTitleStarted {
                 cancellation,

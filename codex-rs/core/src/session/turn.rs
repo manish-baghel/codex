@@ -388,6 +388,7 @@ pub(crate) async fn run_turn(
         .await;
     sess.set_previous_turn_settings(Some(PreviousTurnSettings {
         model: turn_context.model_info().slug.clone(),
+        cyber_access_program: turn_context.cyber_access_program,
         comp_hash: turn_context.model_info().comp_hash.clone(),
         realtime_active: Some(turn_context.realtime_active),
     }))
@@ -1359,11 +1360,15 @@ async fn maybe_run_previous_model_inline_compact(
     if !should_compact_for_comp_hash_change && previous_model == turn_context.model_info().slug {
         return Ok(());
     }
-    let previous_model_turn_context = Arc::new(
-        turn_context
-            .with_model(previous_model.clone(), &sess.services.models_manager)
-            .await,
-    );
+    let mut previous_model_turn_context = turn_context
+        .with_model(previous_model.clone(), &sess.services.models_manager)
+        .await;
+    // `with_model` preserves the current turn's access program. Restore the previous
+    // turn's program so compaction uses the same model/cyber_access_program pair as that turn.
+    // Combining the previous model with the current turn's program can produce a pair
+    // that the server rejects.
+    previous_model_turn_context.cyber_access_program = previous_turn_settings.cyber_access_program;
+    let previous_model_turn_context = Arc::new(previous_model_turn_context);
 
     if should_compact_for_comp_hash_change {
         let step_context = sess
@@ -2527,11 +2532,11 @@ async fn try_run_sampling_request(
         .features
         .enabled(Feature::ConcurrentReasoningSummaries)
         && turn_context.provider.info().is_openai();
-    let preempt = step_context.preempt.clone().unwrap_or_default();
+    let mut preempt = step_context.preempt.clone().unwrap_or_default();
     let effort = sess
         .reasoning_effort_for_request(&step_context.settings, super::RequestEffortUsage::Sampling)
         .await;
-    let stream = client_session
+    let mut stream = client_session
         .stream(
             prompt,
             &step_context.settings.model_info,
@@ -2543,21 +2548,11 @@ async fn try_run_sampling_request(
             &inference_trace,
         )
         .instrument(trace_span!("stream_request"))
-        .or_cancel(&preempt)
         .or_cancel(&cancellation_token)
-        .await?;
+        .await??;
     if cancellation_token.is_cancelled() {
         return Err(CodexErr::TurnAborted);
     }
-    if preempt.is_cancelled() {
-        drop(stream);
-        client_session.drop_connection();
-        return Ok(SamplingRequestResult {
-            needs_follow_up: true,
-            last_agent_message: None,
-        });
-    }
-    let mut stream = stream??;
     let mut in_flight: FuturesOrdered<InFlightFuture<'static>> = FuturesOrdered::new();
     let mut needs_follow_up = false;
     let mut last_agent_message: Option<String> = None;
@@ -2615,9 +2610,17 @@ async fn try_run_sampling_request(
         let event = match event {
             Ok(Ok(event)) => event,
             Ok(Err(_)) => {
+                if let Some(interrupt) = stream.interrupt.take() {
+                    if step_context.settings.model_info.use_responses_lite {
+                        let _ = interrupt.send(());
+                    }
+                    // Drain the response normally before reusing its connection and history.
+                    preempt = CancellationToken::new();
+                    needs_follow_up = true;
+                    continue;
+                }
                 // TODO: Reconcile any response item already being presented to the client.
                 drop(stream);
-                client_session.drop_connection();
                 break Ok(SamplingRequestResult {
                     needs_follow_up: true,
                     last_agent_message,

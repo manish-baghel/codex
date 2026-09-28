@@ -1264,7 +1264,6 @@ fn config_toml_deserializes_model_availability_nux() {
             show_tooltips: true,
             show_server_version_notice: true,
             auto_recap: true,
-            prompt_suggestions: false,
             disable_paste_burst: None,
             vim_mode_default: false,
             question_esc_back: true,
@@ -3730,7 +3729,7 @@ async fn implicit_builtin_workspace_profile_preserves_add_dir_metadata_carveouts
     let codex_home = TempDir::new()?;
     let cwd = TempDir::new()?;
     let extra_root = TempDir::new()?;
-    for subpath in [".git", ".agents", ".codex"] {
+    for subpath in [".git", ".agents", ".codex", ".aws"] {
         std::fs::create_dir_all(extra_root.path().join(subpath))?;
     }
     let project_key = cwd.path().to_string_lossy().to_string();
@@ -3763,7 +3762,7 @@ async fn implicit_builtin_workspace_profile_preserves_add_dir_metadata_carveouts
         policy.can_write_local_path_with_cwd(extra_root.as_path(), cwd.path()),
         "expected implicit :workspace to preserve additional writable roots, policy: {policy:?}"
     );
-    for subpath in [".git", ".agents", ".codex"] {
+    for subpath in [".git", ".agents", ".codex", ".aws"] {
         assert!(
             !policy.can_write_local_path_with_cwd(&extra_root.join(subpath), cwd.path()),
             "expected implicit :workspace to preserve legacy metadata carveout for {subpath}, \
@@ -4406,7 +4405,6 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
             show_tooltips: true,
             show_server_version_notice: true,
             auto_recap: true,
-            prompt_suggestions: false,
             disable_paste_burst: None,
             vim_mode_default: false,
             question_esc_back: true,
@@ -4953,7 +4951,7 @@ exclude_slash_tmp = true
                             missing_path_behavior: None,
                         })
                 );
-                for subpath in [".git", ".agents", ".codex"] {
+                for subpath in [".git", ".agents", ".codex", ".aws"] {
                     assert!(
                         file_system_policy
                             .entries
@@ -8449,6 +8447,7 @@ async fn load_config_uses_auto_review_guardian_policy_config_and_template() -> s
     let codex_home = TempDir::new()?;
     let cfg = ConfigToml {
         auto_review: Some(AutoReviewToml {
+            circuit_break_action: None,
             policy: Some("  Use the user-configured guardian policy.  ".to_string()),
             extra_policy: Some("  Use the user-configured additional policy.  ".to_string()),
             experimental_policy_template: Some(
@@ -8507,6 +8506,7 @@ async fn requirements_guardian_policy_beats_auto_review() -> std::io::Result<()>
         .map_err(std::io::Error::other)?;
         let cfg = ConfigToml {
             auto_review: Some(AutoReviewToml {
+                circuit_break_action: None,
                 policy: Some("Use the user-configured guardian policy.".to_string()),
                 extra_policy: Some("Use the user-configured additional policy.".to_string()),
                 experimental_policy_template: None,
@@ -8545,6 +8545,7 @@ async fn load_config_ignores_empty_auto_review_guardian_policy_config() -> std::
     let codex_home = TempDir::new()?;
     let cfg = ConfigToml {
         auto_review: Some(AutoReviewToml {
+            circuit_break_action: None,
             policy: Some("   ".to_string()),
             extra_policy: Some("   ".to_string()),
             experimental_policy_template: None,
