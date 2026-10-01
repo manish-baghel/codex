@@ -538,7 +538,7 @@ class ClientInfo(BaseModel):
     version: str
 
 
-class CodexErrorInfoValue(Enum):
+class CodexErrorInfoValue(str, Enum):
     context_window_exceeded = "contextWindowExceeded"
     session_budget_exceeded = "sessionBudgetExceeded"
     usage_limit_exceeded = "usageLimitExceeded"
@@ -554,6 +554,15 @@ class CodexErrorInfoValue(Enum):
     thread_rollback_failed = "threadRollbackFailed"
     sandbox_error = "sandboxError"
     other = "other"
+
+    @classmethod
+    def _missing_(cls, value: object) -> CodexErrorInfoValue | None:
+        if not isinstance(value, str):
+            return None
+        member = str.__new__(cls, value)
+        member._name_ = value
+        member._value_ = value
+        return member
 
 
 class HttpConnectionFailed(BaseModel):
@@ -5247,13 +5256,6 @@ class ThreadExtra(BaseModel):
     )
 
 
-class ThreadGoalClearParams(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    thread_id: Annotated[str, Field(alias="threadId")]
-
-
 class ThreadGoalClearResponse(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -5273,6 +5275,11 @@ class ThreadGoalGetParams(BaseModel):
         populate_by_name=True,
     )
     thread_id: Annotated[str, Field(alias="threadId")]
+
+
+class ThreadGoalMutationOrigin(Enum):
+    user = "user"
+    automatic = "automatic"
 
 
 class ThreadGoalStatus(Enum):
@@ -6867,15 +6874,6 @@ class ThreadGoalGetRequest(BaseModel):
     params: ThreadGoalGetParams
 
 
-class ThreadGoalClearRequest(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    id: RequestId
-    method: Annotated[Literal["thread/goal/clear"], Field(title="Thread/goal/clearRequestMethod")]
-    params: ThreadGoalClearParams
-
-
 class ThreadMetadataUpdateRequest(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -7680,6 +7678,7 @@ class CodexErrorInfo(
         | ResponseStreamDisconnectedCodexErrorInfo
         | ResponseTooManyFailedAttemptsCodexErrorInfo
         | ActiveTurnNotSteerableCodexErrorInfo
+        | dict[str, Any]
     ]
 ):
     model_config = ConfigDict(
@@ -7691,7 +7690,8 @@ class CodexErrorInfo(
         | ResponseStreamConnectionFailedCodexErrorInfo
         | ResponseStreamDisconnectedCodexErrorInfo
         | ResponseTooManyFailedAttemptsCodexErrorInfo
-        | ActiveTurnNotSteerableCodexErrorInfo,
+        | ActiveTurnNotSteerableCodexErrorInfo
+        | dict[str, Any],
         Field(
             description="This translation layer make sure that we expose codex error code in camel case.\n\nWhen an upstream HTTP status is available (for example, from the Responses API or a provider), it is forwarded in `httpStatusCode` on the relevant `codexErrorInfo` variant."
         ),
@@ -9812,6 +9812,17 @@ class ThreadGoal(BaseModel):
     updated_at: Annotated[int, Field(alias="updatedAt")]
 
 
+class ThreadGoalClearParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    origin: Annotated[
+        ThreadGoalMutationOrigin | None,
+        Field(description="Missing provenance does not supply user authorization."),
+    ] = None
+    thread_id: Annotated[str, Field(alias="threadId")]
+
+
 class ThreadGoalGetResponse(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -9824,6 +9835,10 @@ class ThreadGoalSetParams(BaseModel):
         populate_by_name=True,
     )
     objective: str | None = None
+    origin: Annotated[
+        ThreadGoalMutationOrigin | None,
+        Field(description="Missing provenance does not supply user authorization."),
+    ] = None
     status: ThreadGoalStatus | None = None
     thread_id: Annotated[str, Field(alias="threadId")]
     token_budget: Annotated[int | None, Field(alias="tokenBudget")] = None
@@ -10522,6 +10537,15 @@ class ThreadGoalSetRequest(BaseModel):
     id: RequestId
     method: Annotated[Literal["thread/goal/set"], Field(title="Thread/goal/setRequestMethod")]
     params: ThreadGoalSetParams
+
+
+class ThreadGoalClearRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[Literal["thread/goal/clear"], Field(title="Thread/goal/clearRequestMethod")]
+    params: ThreadGoalClearParams
 
 
 class ThreadListRequest(BaseModel):

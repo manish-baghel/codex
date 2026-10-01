@@ -775,6 +775,9 @@ impl App {
                     .set_workspace_roots(self.config.permissions.workspace_roots().to_vec());
             }
             self.config = destination_config;
+            if is_new_session {
+                self.remember_launch_permissions();
+            }
             if !read_only {
                 let approval = self.config.permissions.approval_policy.value();
                 if self
@@ -862,7 +865,7 @@ impl App {
                 self.chat_widget.maybe_send_next_queued_input();
             }
         }
-        if !read_only && !is_new_session {
+        if !read_only && !is_new_session && !self.chat_widget.fork_in_progress {
             self.maybe_prompt_resume_paused_goal_after_resume(app_server, root_thread_id)
                 .await;
         }
@@ -985,7 +988,10 @@ impl App {
         }
         .to_path_buf();
         if let Some(draft) = startup_draft.as_deref_mut() {
-            draft.apply_config(&config);
+            draft.apply_settings(
+                &crate::local_settings::LocalSettings::from(&config),
+                config.cwd.as_path(),
+            );
         }
         let mut server_model_cleared = false;
         match StartupDraftPump::run_with_optional_draft(
