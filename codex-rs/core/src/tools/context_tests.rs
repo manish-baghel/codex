@@ -554,3 +554,43 @@ fn exec_command_tool_output_preserves_omission_metadata_when_truncated() {
     assert!(text.contains("Warning: truncated output (original token count: 42000)"));
     assert_eq!(text.matches(&marker).count(), 1);
 }
+
+#[test]
+fn exec_command_tool_output_strips_terminal_controls_before_the_model_sees_them() {
+    let payload = ToolPayload::Function {
+        arguments: "{}".to_string(),
+    };
+    let output = ExecCommandToolOutput {
+        event_call_id: "call-ansi".to_string(),
+        chunk_id: "chunk".to_string(),
+        wall_time: std::time::Duration::from_millis(/*millis*/ 10),
+        raw_output: b"kept\x1b]133;A\x1b\\\x1b[?2026h\x1b[?1049h\x1b[31mred\x1b[0m\x1b".to_vec(),
+        truncation_policy: TruncationPolicy::Tokens(10_000),
+        max_output_tokens: None,
+        process_id: None,
+        exit_code: Some(0),
+        original_token_count: Some(8),
+        output_omitted_bytes: None,
+        hook_command: None,
+    };
+
+    let response = output.to_response_item("call-ansi", &payload);
+    let ResponseInputItem::FunctionCallOutput { output, .. } = response else {
+        panic!("expected FunctionCallOutput");
+    };
+    let text = output
+        .body
+        .to_text()
+        .expect("exec output should serialize as text");
+    assert!(text.contains("kept"), "{text}");
+    assert!(text.contains("red"), "{text}");
+    assert!(
+        !text.contains("\u{1b}[?"),
+        "private mode leaked into function_call_output: {text:?}"
+    );
+    assert!(
+        !text.contains("\u{1b}]"),
+        "OSC leaked into function_call_output: {text:?}"
+    );
+    assert!(!text.ends_with('\u{1b}'), "{text:?}");
+}

@@ -1,3 +1,4 @@
+use codex_ansi_escape::strip_terminal_controls_owned;
 use rand::Rng;
 use std::cmp::Reverse;
 use std::collections::HashMap;
@@ -662,7 +663,7 @@ impl UnifiedExecProcessManager {
         .unwrap_or(usize::MAX);
         let output_omitted_bytes = NonZeroUsize::new(collected_output.omitted_bytes());
         let collected = collected_output.to_bytes_with_omission_marker();
-        let text = String::from_utf8_lossy(&collected).to_string();
+        let text = strip_terminal_controls_owned(String::from_utf8_lossy(&collected));
         let chunk_id = generate_chunk_id();
         if deferred_network_approval
             .as_ref()

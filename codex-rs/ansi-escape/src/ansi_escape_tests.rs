@@ -16,6 +16,7 @@ use tracing_subscriber::Layer;
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::layer::SubscriberExt;
 
+use super::ansi_escape;
 use super::ansi_escape_line;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -73,4 +74,12 @@ fn multiline_warning_contains_counts_and_preserves_the_styled_first_line() {
         *events.lock().expect("read captured events"),
         expected_events
     );
+}
+
+#[test]
+fn ansi_escape_drops_partial_controls_without_panicking() {
+    let text = ansi_escape("\x1b]133;A\x1b\\\x1b[?2026h\x1b[?1049h\x1b[31mred\x1b[0m\x1b");
+    let rendered = text.to_string();
+    assert_eq!(rendered, "red");
+    assert!(!rendered.as_bytes().contains(&0x1b));
 }

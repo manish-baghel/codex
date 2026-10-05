@@ -8,6 +8,10 @@ use crate::history_cell::new_reasoning_summary_block;
 use crate::history_cell::new_unified_exec_interaction;
 use codex_app_server_protocol::CommandExecutionSource;
 use pretty_assertions::assert_eq;
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::widgets::Paragraph;
+use ratatui::widgets::Widget;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -87,4 +91,58 @@ fn raw_grouped_history_retains_terminal_input_and_omits_reasoning() {
         group.transcript_hyperlink_lines(/*width*/ 80),
         expected_rich
     );
+}
+
+#[test]
+fn resumed_partial_tool_output_draws_without_an_escape() {
+    let output = "\
+before\x1b]133;A\x1b\\kept\x1b[?2026h\x1b[?1049h\x1b[31m!\x1b[0m\x1b]133;A\x1b";
+    let cell = ExecCell::new(
+        ExecCall {
+            call_id: "call-1".to_string(),
+            command: vec!["echo".to_string(), "partial".to_string()],
+            parsed: Vec::new(),
+            output: Some(CommandOutput::new(/*exit_code*/ 0, output.to_string())),
+            source: CommandExecutionSource::UnifiedExecStartup,
+            start_time: None,
+            duration: Some(Duration::from_millis(/*millis*/ 5)),
+            interaction_input: None,
+        },
+        /*animations_enabled*/ false,
+    );
+
+    let display = draw_lines(cell.display_lines(/*width*/ 80));
+    assert!(display.contains("kept"), "{display:?}");
+    assert!(
+        !display.as_bytes().contains(&0x1b),
+        "display buffer leaked an escape: {display:?}"
+    );
+
+    let raw = draw_lines(cell.raw_lines());
+    assert!(raw.contains("kept"), "{raw:?}");
+    assert!(
+        !raw.as_bytes().contains(&0x1b),
+        "raw buffer leaked an escape: {raw:?}"
+    );
+}
+
+fn draw_lines(lines: Vec<Line<'static>>) -> String {
+    let width = 80u16;
+    let height = u16::try_from(lines.len().max(1)).expect("line count fits");
+    let area = Rect::new(0, 0, width, height);
+    let mut buffer = Buffer::empty(area);
+    Paragraph::new(lines).render(area, &mut buffer);
+    let mut rendered = String::new();
+    for y in 0..buffer.area.height {
+        for x in 0..buffer.area.width {
+            let symbol = buffer[(x, y)].symbol();
+            assert!(
+                !symbol.as_bytes().contains(&0x1b),
+                "cell ({x}, {y}) contains an escape: {symbol:?}"
+            );
+            rendered.push_str(symbol);
+        }
+        rendered.push('\n');
+    }
+    rendered
 }

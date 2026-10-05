@@ -12,6 +12,7 @@ use tokio::task::JoinHandle;
 use tokio::time::Duration;
 use tokio_util::sync::CancellationToken;
 
+use codex_ansi_escape::strip_terminal_controls_owned;
 use codex_exec_server::ExecProcess;
 use codex_exec_server::ExecProcessEvent;
 use codex_exec_server::ProcessSignal as ExecServerProcessSignal;
@@ -312,7 +313,7 @@ impl UnifiedExecProcess {
         .await;
 
         let aggregated = self.snapshot_output().await;
-        let aggregated_text = String::from_utf8_lossy(&aggregated);
+        let aggregated_text = strip_terminal_controls_owned(String::from_utf8_lossy(&aggregated));
         self.check_for_sandbox_denial_with_text(aggregated_text.as_ref())
             .await?;
 

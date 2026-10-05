@@ -11,5 +11,5 @@ pub fn ansi_escape<'a>(s: &'a str) -> Text<'a>
 Advantages:
 
 - `ansi_to_tui::IntoText` is not in scope for the entire TUI crate
-- we `panic!()` and log if `IntoText` returns an `Err` and log it so that
-  the caller does not have to deal with it
+- non-SGR terminal controls are stripped before parsing, and a parser error
+  falls back to the plain text instead of panicking

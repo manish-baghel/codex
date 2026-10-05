@@ -3,6 +3,11 @@ use ansi_to_tui::IntoText;
 use ratatui::text::Line;
 use ratatui::text::Text;
 
+mod strip;
+use strip::strip_all_terminal_controls;
+pub use strip::strip_terminal_controls;
+pub use strip::strip_terminal_controls_owned;
+
 // Expand tabs in a best-effort way for transcript rendering.
 // Tabs can interact poorly with left-gutter prefixes in our TUI and CLI
 // transcript views (e.g., `nl` separates line numbers from content with a tab).
@@ -44,20 +49,24 @@ pub fn ansi_escape_line(s: &str) -> Line<'static> {
 pub fn ansi_escape(s: &str) -> Text<'static> {
     // to_text() claims to be faster, but introduces complex lifetime issues
     // such that it's not worth it.
-    match s.into_text() {
+    let stripped = strip_terminal_controls(s);
+    match stripped.as_ref().into_text() {
         Ok(text) => text,
-        Err(err) => match err {
-            Error::NomError(message) => {
-                tracing::error!(
-                    "ansi_to_tui NomError docs claim should never happen when parsing `{s}`: {message}"
-                );
-                panic!();
+        Err(err) => {
+            match err {
+                Error::NomError(message) => {
+                    tracing::error!(
+                        "ansi_to_tui rejected stripped tool output ({message}); rendering it as plain text"
+                    );
+                }
+                Error::Utf8Error(utf8error) => {
+                    tracing::error!(
+                        "ansi_to_tui Utf8Error on stripped tool output ({utf8error}); rendering it as plain text"
+                    );
+                }
             }
-            Error::Utf8Error(utf8error) => {
-                tracing::error!("Utf8Error: {utf8error}");
-                panic!();
-            }
-        },
+            Text::from(strip_all_terminal_controls(stripped.as_ref()))
+        }
     }
 }
 

@@ -7,6 +7,7 @@ use super::*;
 use crate::style::accent_color;
 use crate::terminal_hyperlinks::adaptive_wrap_hyperlink_lines;
 use crate::width::display_width;
+use codex_ansi_escape::strip_terminal_controls;
 
 #[derive(Debug)]
 pub(crate) struct UnifiedExecInteractionCell {
@@ -203,6 +204,8 @@ impl HistoryCell for UnifiedExecProcessesCell {
             let chunk_prefix_first = "    ↳ ";
             let chunk_prefix_next = "      ";
             for (idx, chunk) in process.recent_chunks.iter().enumerate() {
+                let chunk = strip_terminal_controls(chunk);
+                let chunk = chunk.as_ref();
                 let chunk_prefix = if idx == 0 {
                     chunk_prefix_first
                 } else {
@@ -259,3 +262,7 @@ pub(crate) fn new_unified_exec_processes_output(
     let summary = UnifiedExecProcessesCell::new(processes);
     CompositeHistoryCell::new(vec![Box::new(command), Box::new(summary)])
 }
+
+#[cfg(test)]
+#[path = "exec_tests.rs"]
+mod tests;

@@ -1,3 +1,4 @@
+use codex_ansi_escape::strip_terminal_controls;
 use itertools::Either;
 use std::borrow::Cow;
 use std::collections::VecDeque;
@@ -222,34 +223,23 @@ impl LiveCommandOutputLine {
         }
     }
 
-    /// Renders the retained line, closing truncated ANSI sequences before the omission marker.
+    /// Renders the retained line. Head and tail are stripped separately so a cut
+    /// sequence at the end of the head is dropped instead of swallowing the marker.
     fn render(&self) -> String {
+        let head = strip_terminal_controls(&self.head);
+        let tail = strip_terminal_controls(&self.tail);
         let omission_marker = (self.omitted_bytes > 0)
             .then(|| format!("... {} bytes omitted ...", self.omitted_bytes));
         let mut line = String::with_capacity(
-            self.head
-                .len()
-                .saturating_add(self.tail.len())
-                .saturating_add(omission_marker.as_ref().map_or(0, String::len))
-                .saturating_add(1),
+            head.len()
+                .saturating_add(tail.len())
+                .saturating_add(omission_marker.as_ref().map_or(0, String::len)),
         );
-        line.push_str(&self.head);
+        line.push_str(&head);
         if let Some(omission_marker) = omission_marker {
-            let terminator = self.head.rfind('\x1b').and_then(|start| {
-                let escape = &self.head.as_bytes()[start + 1..];
-                match escape.first() {
-                    Some(b']') if !escape.contains(&b'\x07') => Some('\x07'),
-                    Some(b'[') if !escape[1..].iter().any(u8::is_ascii_alphabetic) => Some('m'),
-                    _ => None,
-                }
-            });
-            if let Some(terminator) = terminator {
-                line.push(terminator);
-            }
-            line.push_str("\x1b[0m");
             line.push_str(&omission_marker);
         }
-        line.push_str(&self.tail);
+        line.push_str(&tail);
         line
     }
 }

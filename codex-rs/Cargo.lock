@@ -2938,6 +2938,7 @@ dependencies = [
  "codex-agent-message-board-extension",
  "codex-agent-roles",
  "codex-analytics",
+ "codex-ansi-escape",
  "codex-api",
  "codex-app-server-protocol",
  "codex-apply-patch",

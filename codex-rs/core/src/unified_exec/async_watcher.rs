@@ -1,3 +1,4 @@
+use codex_ansi_escape::strip_terminal_controls_owned;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -462,10 +463,12 @@ async fn resolve_aggregated_output(
 ) -> String {
     let guard = output_buffer.lock().await;
     if guard.transcript.retained_bytes() == 0 {
-        return fallback;
+        return strip_terminal_controls_owned(std::borrow::Cow::Owned(fallback));
     }
 
-    String::from_utf8_lossy(&guard.transcript.to_bytes_with_omission_marker()).to_string()
+    strip_terminal_controls_owned(String::from_utf8_lossy(
+        &guard.transcript.to_bytes_with_omission_marker(),
+    ))
 }
 
 #[cfg(test)]

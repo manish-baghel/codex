@@ -1,3 +1,5 @@
+use codex_ansi_escape::strip_terminal_controls_owned;
+
 use crate::original_image_detail::sanitize_original_image_detail;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
@@ -396,7 +398,7 @@ pub struct ExecCommandToolOutput {
 impl ToolOutput for ExecCommandToolOutput {
     fn log_output(&self) -> String {
         // The telemetry budget must not inherit the model's output-token limit.
-        let mut output = String::from_utf8_lossy(&self.raw_output).into_owned();
+        let mut output = self.decoded_output();
         if let Some(omitted_bytes) = self.output_omitted_bytes {
             let marker = format_output_omission_marker(omitted_bytes.get());
             if !output.contains(&marker) {
@@ -468,7 +470,7 @@ impl ToolOutput for ExecCommandToolOutput {
             original_token_count: self.original_token_count,
             output: match self.max_output_tokens {
                 Some(max_tokens) => self.truncated_output(max_tokens),
-                None => String::from_utf8_lossy(&self.raw_output).to_string(),
+                None => self.decoded_output(),
             },
         };
 
@@ -492,8 +494,12 @@ impl ExecCommandToolOutput {
         self.truncated_output_with_policy(TruncationPolicy::Tokens(max_tokens))
     }
 
+    fn decoded_output(&self) -> String {
+        strip_terminal_controls_owned(String::from_utf8_lossy(&self.raw_output))
+    }
+
     fn truncated_output_with_policy(&self, policy: TruncationPolicy) -> String {
-        let text = String::from_utf8_lossy(&self.raw_output).to_string();
+        let text = self.decoded_output();
         let Some(omitted_bytes) = self.output_omitted_bytes else {
             return formatted_truncate_text(&text, policy);
         };

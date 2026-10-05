@@ -399,12 +399,24 @@ pub(super) fn reapply_raw_mode_after_resume() -> Result<()> {
 /// Uses a stronger keyboard reset than `restore` so the parent shell recovers even if a
 /// terminal missed the stack pop that normally pairs with [`set_modes`].
 pub fn restore_after_exit() -> Result<()> {
-    let mut first_error = restore_common(
+    // End an open OSC/DCS and cancel a partial escape before the keyboard pop
+    // and the bracketed-paste disable. One leaked frame would otherwise swallow
+    // those resets. The next resume is safe only because tool output is stripped.
+    let mut out = stdout();
+    let mut first_error = None;
+    if let Err(err) = out.write_all(b"\x1b\\\x18") {
+        first_error = Some(err);
+    } else if let Err(err) = out.flush() {
+        first_error = Some(err);
+    }
+    drop(out);
+    if let Err(err) = restore_common(
         RawModeRestore::Disable,
         KeyboardRestore::ResetAfterExit,
         TerminalHandoff::Restore,
-    )
-    .err();
+    ) {
+        first_error.get_or_insert(err);
+    }
     if let Err(err) = terminal_stderr::finish() {
         first_error.get_or_insert(err);
     }

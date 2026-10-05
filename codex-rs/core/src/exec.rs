@@ -1,6 +1,7 @@
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io;
 #[cfg(target_os = "windows")]
@@ -23,6 +24,7 @@ use crate::sandboxing::SandboxPermissions;
 use crate::spawn::SpawnChildRequest;
 use crate::spawn::StdioPolicy;
 use crate::spawn::spawn_child_async;
+use codex_ansi_escape::strip_terminal_controls_owned;
 use codex_network_proxy::NetworkProxy;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result;
@@ -779,6 +781,13 @@ async fn exec_windows_sandbox(
     })
 }
 
+fn strip_exec_stream(output: StreamOutput<String>) -> StreamOutput<String> {
+    StreamOutput {
+        text: strip_terminal_controls_owned(Cow::Owned(output.text)),
+        truncated_after_lines: output.truncated_after_lines,
+    }
+}
+
 fn finalize_exec_result(
     raw_output_result: std::result::Result<RawExecToolCallOutput, CodexErr>,
     sandbox_type: SandboxType,
@@ -806,9 +815,10 @@ fn finalize_exec_result(
                 exit_code = EXEC_TIMEOUT_EXIT_CODE;
             }
 
-            let stdout = raw_output.stdout.from_utf8_lossy();
-            let stderr = raw_output.stderr.from_utf8_lossy();
-            let aggregated_output = raw_output.aggregated_output.from_utf8_lossy();
+            let stdout = strip_exec_stream(raw_output.stdout.from_utf8_lossy());
+            let stderr = strip_exec_stream(raw_output.stderr.from_utf8_lossy());
+            let aggregated_output =
+                strip_exec_stream(raw_output.aggregated_output.from_utf8_lossy());
             let exec_output = ExecToolCallOutput {
                 exit_code,
                 stdout,
